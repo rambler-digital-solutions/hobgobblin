@@ -1,0 +1,101 @@
+plugins {
+    id 'java'
+}
+
+repositories {
+    mavenLocal()
+    mavenCentral()
+    maven {
+      url "https://plugins.gradle.org/m2/"
+    }
+    maven {
+      url "http://repo.spring.io/plugins-release/"
+    }
+    maven {
+      url "http://packages.confluent.io/maven/"
+    }
+}
+
+dependencies {
+    compile 'com.linkedin.gobblin:gobblin-core:0.10.0'
+    compile 'com.linkedin.gobblin:gobblin-metrics:0.10.0'
+    compile 'io.dropwizard.metrics:metrics-graphite:3.1.0'
+    compile 'com.doctusoft:json-schema-java7:1.4.1.1'
+
+    testCompile 'org.testng:testng:6.11'
+}
+
+test {
+    useTestNG()
+}
+
+// get version from git
+def stdout = new ByteArrayOutputStream()
+exec {
+    executable 'bash'
+    args '-c', 'git describe --always --tags | sed -r \'s/^(.*)-(.*)-(.*)/\\1.\\2+\\3/\''
+    standardOutput = stdout;
+}
+version = stdout.toString().trim()
+println "hobgobblin version: <$version>";
+jar {
+    manifest {
+        attributes 'Implementation-Version': version
+    }
+
+    // Hack to include validator jar and it's deps
+    from { configurations.compile.filter({
+                (it.path =~ /.*json-schema-java7.*\.jar/) ||
+                (it.path =~ /.*threetenbp.*\.jar/)
+            })
+            .collect { it.isDirectory() ? it : zipTree(it) } }
+}
+
+
+// Prints current project version
+task make_version {
+    def file = new File('VERSION')
+    file.text = version
+}
+
+sourceCompatibility = 1.7
+targetCompatibility = 1.7
+ext.classification="library"
+
+// making .txz
+// various levels of destination dir
+def chrootDir = "${project.rootDir.path}/chroot"
+def prefix = '/usr/local'
+def prefixDir = "${chrootDir}${prefix}"
+def pkgName = "hobgobblin"
+def dstLibDir = "${prefixDir}/${pkgName}/lib"
+
+task chroot (type: Copy, dependsOn: jar) {
+    from jar.archivePath
+    into dstLibDir
+    doLast {
+        exec {
+	    commandLine 'ln', '-s', jar.archiveName, "${pkgName}.jar"
+            workingDir dstLibDir
+        }
+    }
+}
+
+task pkg(type: Exec, dependsOn: chroot) {
+   environment(['ROOT': chrootDir, 'PKG_NAME': pkgName, 'PREFIX': prefix, 'VERSION': version])
+   commandLine 'pymtt', '-e', 'MANIFEST.proto', 'MANIFEST'
+   workingDir project.rootDir.path
+   doLast {
+       exec {
+           commandLine 'pkg', 'create',
+                    '--verbose',
+                    '--format', 'txz',
+                    '--root-dir', chrootDir,
+                    '--manifest', 'MANIFEST',
+                    '--out-dir', './dist/'
+           workingDir project.rootDir.path
+
+       }
+   }
+}
+
